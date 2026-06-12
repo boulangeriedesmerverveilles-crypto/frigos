@@ -465,7 +465,16 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     box-shadow: 0 2px 6px rgba(0,0,0,.07);
   }
   .frigo h2 { font-size: 1.05rem; color: var(--bleu-fonce); margin-bottom: 2px; }
+  .frigo .entete { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .frigo .plage { font-size: .8rem; color: #999; margin-bottom: 10px; }
+  .btn-off {
+    border: 2px solid #ccc; background: white; color: #999;
+    border-radius: 20px; padding: 8px 16px; font-size: .9rem; font-weight: bold;
+    flex-shrink: 0;
+  }
+  .btn-off.actif { background: #777; border-color: #777; color: white; }
+  .frigo.eteint .releve { opacity: .35; pointer-events: none; }
+  .frigo.eteint .plage { text-decoration: line-through; }
   .releve { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid #eee; }
   .releve .moment { font-size: 1rem; flex: 1; }
   .stepper { display: flex; align-items: center; gap: 6px; }
@@ -587,9 +596,14 @@ function conforme(f, v) { return v >= f.min && v <= f.max; }
 function rendreSaisie() {
   const date = $("dateJour").value;
   const jour = donnees[date] || {};
-  $("listeFrigos").innerHTML = FRIGOS.map(f => `
-    <div class="frigo">
-      <h2>${f.nom}</h2>
+  $("listeFrigos").innerHTML = FRIGOS.map(f => {
+    const off = !!(jour[f.id] && jour[f.id].off);
+    return `
+    <div class="frigo ${off ? "eteint" : ""}" id="frigo_${f.id}">
+      <div class="entete">
+        <h2>${f.nom}</h2>
+        <button class="btn-off ${off ? "actif" : ""}" id="off_${f.id}" onclick="basculerOff('${f.id}')">${off ? "⏻ Éteint" : "⏻ Off"}</button>
+      </div>
       <div class="plage">${f.type} — plage autorisée : ${fmtTemp(f.min)} °C à ${fmtTemp(f.max)} °C</div>
       ${MOMENTS.map(m => {
         const v = jour[f.id] && jour[f.id][m] !== undefined ? jour[f.id][m] : "";
@@ -606,8 +620,22 @@ function rendreSaisie() {
         </div>`;
       }).join("")}
     </div>
-  `).join("");
+  `;}).join("");
   FRIGOS.forEach(f => MOMENTS.forEach(m => majClasse($("t_" + f.id + "_" + m), f.id)));
+}
+
+function estOff(fid) {
+  return $("off_" + fid).classList.contains("actif");
+}
+
+function basculerOff(fid) {
+  const btn = $("off_" + fid);
+  const off = !btn.classList.contains("actif");
+  btn.classList.toggle("actif", off);
+  btn.textContent = off ? "⏻ Éteint" : "⏻ Off";
+  $("frigo_" + fid).classList.toggle("eteint", off);
+  if (off) MOMENTS.forEach(m => { $("t_" + fid + "_" + m).value = ""; majClasse($("t_" + fid + "_" + m), fid); });
+  majBandeau();
 }
 
 function bouger(fid, moment, delta) {
@@ -645,14 +673,17 @@ function enregistrer() {
   if (!date) return;
   const jour = {};
   let n = 0;
-  FRIGOS.forEach(f => MOMENTS.forEach(m => {
-    const val = $("t_" + f.id + "_" + m).value;
-    if (val !== "") {
-      jour[f.id] = jour[f.id] || {};
-      jour[f.id][m] = parseFloat(val);
-      n++;
-    }
-  }));
+  FRIGOS.forEach(f => {
+    if (estOff(f.id)) { jour[f.id] = { off: true }; n++; return; }
+    MOMENTS.forEach(m => {
+      const val = $("t_" + f.id + "_" + m).value;
+      if (val !== "") {
+        jour[f.id] = jour[f.id] || {};
+        jour[f.id][m] = parseFloat(val);
+        n++;
+      }
+    });
+  });
   if (n > 0) donnees[date] = jour;
   else delete donnees[date];
   localStorage.setItem(CLE, JSON.stringify(donnees));
@@ -686,7 +717,7 @@ function statsMois(mois) {
   FRIGOS.forEach(f => stats[f.id] = { n: 0, min: null, max: null, alertes: 0 });
   jours.forEach(date => FRIGOS.forEach(f => {
     const r = donnees[date][f.id];
-    if (!r) return;
+    if (!r || r.off) return;
     MOMENTS.forEach(m => {
       if (r[m] === undefined) return;
       const s = stats[f.id], v = r[m];
@@ -750,6 +781,7 @@ function genererPdfMois() {
     return [dateFr(date).replace(" " + mois.slice(0,4), ""),
       ...FRIGOS.flatMap(f => MOMENTS.map(m => {
         const r = donnees[date][f.id];
+        if (r && r.off) return "Éteint";
         return r && r[m] !== undefined ? fmtTemp(r[m]) : "—";
       }))];
   });
@@ -765,6 +797,7 @@ function genererPdfMois() {
       if (d.section !== "body" || d.column.index === 0) return;
       const f = FRIGOS[Math.floor((d.column.index - 1) / MOMENTS.length)];
       const txt = d.cell.raw;
+      if (txt === "Éteint") { d.cell.styles.textColor = [150, 150, 150]; d.cell.styles.fontStyle = "italic"; return; }
       if (txt === "—") return;
       const v = parseFloat(String(txt).replace(",", ".").replace("+", ""));
       if (!conforme(f, v)) {
