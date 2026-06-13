@@ -545,6 +545,12 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   .recap-stats table { width: 100%; border-collapse: collapse; font-size: .9rem; }
   .recap-stats td, .recap-stats th { padding: 6px 4px; text-align: left; border-top: 1px solid #eee; }
   .recap-stats .nb-alertes { color: var(--rouge); font-weight: bold; }
+  .controle table { font-size: .85rem; }
+  .controle td.ok { color: var(--vert); font-weight: bold; }
+  .controle td.manque { color: var(--rouge); font-weight: bold; }
+  .controle td.futur { color: #bbb; }
+  .controle tr.alerte-jour td:first-child { color: var(--rouge); font-weight: bold; }
+  .controle .legende { font-size: .78rem; color: #999; margin-top: 8px; }
   .vide { text-align: center; padding: 30px; color: #999; }
   .toast {
     position: fixed; bottom: 110px; left: 50%; transform: translateX(-50%);
@@ -558,7 +564,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 <body>
 <header>
   <h1>🌡️ Températures frigos</h1>
-  <div class="sous">Boulangerie des Merveilles — Boutique — Suivi HACCP</div>
+  <div class="sous">Boulangerie des Merveilles — Boutique — Suivi HACCP <span id="etatSync" title="Synchronisation">⚪</span></div>
 </header>
 
 <main>
@@ -594,6 +600,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 <div class="toast" id="toast"></div>
 
 <script>
+const SYNC = {
+  url: "https://www.boulangeriedesmerveilles.fr/wp-json/bdm-frigos/v1/data",
+  jeton: "31bf87011bfba9b6eb857d56426476fc18746b496a2c034f",
+};
+const CLE_ATTENTE = "bdm_frigos_attente";
 const VENDEUSES = { Matin: "Raïna", Soir: "Maeva" };
 const FRIGOS = [
   { id: "vitrine_salee", nom: "Vitrine salée",      type: "Froid positif", min: 0,   max: 4,   defaut: 3 },
@@ -722,6 +733,7 @@ function basculerOff(fid) {
   else delete jour[fid];
   if (Object.keys(jour).length === 0) delete donnees[date];
   localStorage.setItem(CLE, JSON.stringify(donnees));
+  if (off) pushServeur();
   rendreSaisie();
 }
 
@@ -749,6 +761,7 @@ function valider() {
   jour._v = jour._v || {};
   jour._v[momentActif] = { h: String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0"), par: VENDEUSES[momentActif] };
   localStorage.setItem(CLE, JSON.stringify(donnees));
+  pushServeur();
   majOnglets();
   majStatut();
   toast("✓ " + momentActif + " validé par " + VENDEUSES[momentActif] +
@@ -815,6 +828,54 @@ function rendreRecap() {
             <td class="${s.alertes ? "nb-alertes" : ""}">${s.alertes || "0"}</td></tr>`;
         }).join("")}
       </table>
+    </div>
+    ${rendreControle(mois)}`;
+}
+
+/* ---------- CONTRÔLE MANAGER ---------- */
+function rendreControle(mois) {
+  const [annee, m] = mois.split("-").map(Number);
+  const dernierJour = new Date(annee, m, 0).getDate();
+  const ajd = aujourdhui();
+  const lignes = [];
+  let manquesM = 0, manquesS = 0;
+  for (let j = 1; j <= dernierJour; j++) {
+    const date = mois + "-" + String(j).padStart(2, "0");
+    const futur = date > ajd;
+    const jour = donnees[date] || {};
+    const v = jour._v || {};
+    // nb de relevés hors plage ce jour-là
+    let alertes = 0;
+    FRIGOS.forEach(f => {
+      const r = jour[f.id];
+      if (!r || r.off) return;
+      MOMENTS.forEach(mo => { if (r[mo] !== undefined && !conforme(f, r[mo])) alertes++; });
+    });
+    const cell = (moment) => {
+      if (futur) return `<td class="futur">·</td>`;
+      if (v[moment]) return `<td class="ok">✓ ${v[moment].h} ${v[moment].par}</td>`;
+      if (moment === "Matin") manquesM++; else manquesS++;
+      return `<td class="manque">✗ manquant</td>`;
+    };
+    lignes.push(`<tr class="${alertes ? "alerte-jour" : ""}">
+      <td>${String(j).padStart(2,"0")}/${String(m).padStart(2,"0")}${alertes ? " ⚠️" : ""}</td>
+      ${cell("Matin")}${cell("Soir")}
+    </tr>`);
+  }
+  const totalManques = manquesM + manquesS;
+  return `
+    <div class="recap-stats controle">
+      <h2>👔 Contrôle manager — validations du mois</h2>
+      <table>
+        <tr><th>Jour</th><th>Matin (${VENDEUSES.Matin})</th><th>Soir (${VENDEUSES.Soir})</th></tr>
+        ${lignes.join("")}
+      </table>
+      <div class="legende">
+        ${totalManques === 0
+          ? "✓ Toutes les validations sont faites jusqu'à aujourd'hui."
+          : "✗ " + totalManques + " validation(s) manquante(s) : " + manquesM + " le matin, " + manquesS + " le soir."}
+        — ⚠️ = température hors plage ce jour-là (détail en rouge dans le PDF).
+      </div>
     </div>`;
 }
 
@@ -889,6 +950,52 @@ function genererPdfMois() {
   doc.save("Temperatures_HACCP_" + mois + ".pdf");
 }
 
+/* ---------- SYNCHRONISATION ---------- */
+function majSync(ok) {
+  $("etatSync").textContent = ok ? "🟢" : "🔴";
+  $("etatSync").title = ok ? "Synchronisé avec le serveur" : "Hors ligne — sera synchronisé au prochain accès internet";
+}
+
+function appliquerServeur(srv) {
+  if (!srv || Array.isArray(srv) || typeof srv !== "object") srv = {};
+  // les jours présents uniquement en local (saisis hors ligne) sont conservés
+  let aPousser = false;
+  Object.keys(donnees).forEach(d => { if (!srv[d]) { srv[d] = donnees[d]; aPousser = true; } });
+  donnees = srv;
+  localStorage.setItem(CLE, JSON.stringify(donnees));
+  return aPousser;
+}
+
+async function pullServeur() {
+  try {
+    const r = await fetch(SYNC.url, { headers: { "X-BDM-Token": SYNC.jeton } });
+    if (!r.ok) throw new Error(r.status);
+    const aPousser = appliquerServeur(await r.json());
+    majSync(true);
+    if (aPousser || localStorage.getItem(CLE_ATTENTE)) await pushServeur();
+    if (modeRecap) { rendreSelectMois(); rendreRecap(); } else rendreSaisie();
+  } catch (e) {
+    majSync(false);
+  }
+}
+
+async function pushServeur() {
+  try {
+    const r = await fetch(SYNC.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-BDM-Token": SYNC.jeton },
+      body: JSON.stringify(donnees),
+    });
+    if (!r.ok) throw new Error(r.status);
+    appliquerServeur(await r.json());
+    localStorage.removeItem(CLE_ATTENTE);
+    majSync(true);
+  } catch (e) {
+    localStorage.setItem(CLE_ATTENTE, "1");
+    majSync(false);
+  }
+}
+
 /* ---------- NAVIGATION ---------- */
 function basculer() {
   modeRecap = !modeRecap;
@@ -897,7 +1004,7 @@ function basculer() {
   $("btnRecap").textContent = modeRecap ? "✏️" : "📊";
   $("btnValider").style.display = modeRecap ? "none" : "block";
   $("btnRecap").style.flex = modeRecap ? "1" : "0 0 64px";
-  if (modeRecap) { rendreSelectMois(); rendreRecap(); }
+  if (modeRecap) { rendreSelectMois(); rendreRecap(); pullServeur(); }
 }
 
 function toast(msg) {
@@ -916,6 +1023,8 @@ $("btnRecap").addEventListener("click", basculer);
 $("selMois").addEventListener("change", rendreRecap);
 $("btnPdfMois").addEventListener("click", genererPdfMois);
 rendreSaisie();
+pullServeur();
+document.addEventListener("visibilitychange", () => { if (!document.hidden) pullServeur(); });
 </script>
 </body>
 </html>
