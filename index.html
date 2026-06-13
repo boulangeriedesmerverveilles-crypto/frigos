@@ -733,7 +733,7 @@ function basculerOff(fid) {
   else delete jour[fid];
   if (Object.keys(jour).length === 0) delete donnees[date];
   localStorage.setItem(CLE, JSON.stringify(donnees));
-  if (off) pushServeur();
+  if (off) pushServeur({ [date]: { [fid]: { off: true } } });
   rendreSaisie();
 }
 
@@ -761,7 +761,7 @@ function valider() {
   jour._v = jour._v || {};
   jour._v[momentActif] = { h: String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0"), par: VENDEUSES[momentActif] };
   localStorage.setItem(CLE, JSON.stringify(donnees));
-  pushServeur();
+  pushServeur({ [date]: donnees[date] });
   majOnglets();
   majStatut();
   toast("✓ " + momentActif + " validé par " + VENDEUSES[momentActif] +
@@ -966,9 +966,17 @@ function appliquerServeur(srv) {
   return aPousser;
 }
 
+// Tout passe par GET (lecture + écriture via ?push=) : requête CORS « simple »,
+// sans preflight, que l'hébergeur laisse passer (contrairement aux POST inter-domaines).
+function urlSync(payload) {
+  let u = SYNC.url + "?t=" + encodeURIComponent(SYNC.jeton);
+  if (payload) u += "&push=" + encodeURIComponent(JSON.stringify(payload));
+  return u;
+}
+
 async function pullServeur() {
   try {
-    const r = await fetch(SYNC.url, { headers: { "X-BDM-Token": SYNC.jeton } });
+    const r = await fetch(urlSync());
     if (!r.ok) throw new Error(r.status);
     const aPousser = appliquerServeur(await r.json());
     majSync(true);
@@ -979,13 +987,10 @@ async function pullServeur() {
   }
 }
 
-async function pushServeur() {
+async function pushServeur(payload) {
+  payload = payload || donnees; // par défaut tout l'historique (rattrapage hors ligne)
   try {
-    const r = await fetch(SYNC.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-BDM-Token": SYNC.jeton },
-      body: JSON.stringify(donnees),
-    });
+    const r = await fetch(urlSync(payload));
     if (!r.ok) throw new Error(r.status);
     appliquerServeur(await r.json());
     localStorage.removeItem(CLE_ATTENTE);
